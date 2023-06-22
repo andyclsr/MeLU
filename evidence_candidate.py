@@ -5,6 +5,8 @@ import pickle
 from MeLU import MeLU
 from options import config
 
+from tqdm import tqdm
+
 
 def selection(melu, master_path, topk):
     if not os.path.exists("{}/scores/".format(master_path)):
@@ -16,7 +18,8 @@ def selection(melu, master_path, topk):
     target_state = 'warm_state'
     dataset_size = int(len(os.listdir("{}/{}".format(master_path, target_state))) / 4)
     grad_norms = {}
-    for j in list(range(dataset_size)):
+    print("dataset_size is ",dataset_size)
+    for j in tqdm(range(dataset_size)):
         support_xs = pickle.load(open("{}/{}/supp_x_{}.pkl".format(master_path, target_state, j), "rb"))
         support_ys = pickle.load(open("{}/{}/supp_y_{}.pkl".format(master_path, target_state, j), "rb"))
         item_ids = []
@@ -51,6 +54,7 @@ def selection(melu, master_path, topk):
         grad_norms[item_id]['final_score'] = grad_norms[item_id]['discriminative_value'] * grad_norms[item_id]['popularity_value']
 
     movie_info = {}
+    print("reading movie info...")
     with open("./movielens/ml-1m/movies_extrainfos.dat", encoding="utf-8") as f:
         for line in f.readlines():
             tmp = line.strip().split("::")

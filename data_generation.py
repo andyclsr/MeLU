@@ -7,6 +7,7 @@ import random
 import pickle
 from tqdm import tqdm
 
+from torch.utils.data import Dataset
 from options import states
 from dataset import movielens_1m
 
@@ -134,3 +135,104 @@ def generate(master_path):
                 for m_id in tmp_x[indices[-10:]]:
                     f.write("{}\t{}\n".format(u_id, m_id))
             idx += 1
+
+
+class Metamovie(Dataset):
+    def __init__(self, args, partition='train', test_way=None, path=None):
+        super(Metamovie, self).__init__()
+        #self.dataset_path = args.data_root
+        self.partition = partition
+        #self.pretrain = pretrain
+        
+        self.dataset_path = args.data_root
+        dataset_path = self.dataset_path
+        rate_list = load_list("{}/m_rate.txt".format(dataset_path))
+        genre_list = load_list("{}/m_genre.txt".format(dataset_path))
+        actor_list = load_list("{}/m_actor.txt".format(dataset_path))
+        director_list = load_list("{}/m_director.txt".format(dataset_path))
+        gender_list = load_list("{}/m_gender.txt".format(dataset_path))
+        age_list = load_list("{}/m_age.txt".format(dataset_path))
+        occupation_list = load_list("{}/m_occupation.txt".format(dataset_path))
+        zipcode_list = load_list("{}/m_zipcode.txt".format(dataset_path))
+
+        self.dataset = movielens_1m()
+        
+        master_path = self.dataset_path
+        if not os.path.exists("{}/m_movie_dict.pkl".format(master_path)):
+            self.movie_dict = {}
+            for idx, row in self.dataset.item_data.iterrows():
+                m_info = item_converting(row, rate_list, genre_list, director_list, actor_list)
+                self.movie_dict[row['movie_id']] = m_info
+            pickle.dump(self.movie_dict, open("{}/m_movie_dict.pkl".format(master_path), "wb"))
+        else:
+            self.movie_dict = pickle.load(open("{}/m_movie_dict.pkl".format(master_path), "rb"))
+        # hashmap for user profile
+        if not os.path.exists("{}/m_user_dict.pkl".format(master_path)):
+            self.user_dict = {}
+            for idx, row in self.dataset.user_data.iterrows():
+                u_info = user_converting(row, gender_list, age_list, occupation_list, zipcode_list)
+                self.user_dict[row['user_id']] = u_info
+            pickle.dump(self.user_dict, open("{}/m_user_dict.pkl".format(master_path), "wb"))
+        else:
+            self.user_dict = pickle.load(open("{}/m_user_dict.pkl".format(master_path), "rb"))
+        if partition == 'train' or partition == 'valid':
+            self.state = 'warm_state'
+        else:
+            if test_way is not None:
+                if test_way == 'old':
+                    self.state = 'warm_state'
+                elif test_way == 'new_user':
+                    self.state = 'user_cold_state'
+                elif test_way == 'new_item':
+                    self.state = 'item_cold_state'
+                else:
+                    self.state = 'user_and_item_cold_state'
+        print(self.state)
+        with open("{}/{}.json".format(dataset_path, self.state), encoding="utf-8") as f:
+            self.dataset_split = json.loads(f.read())
+        with open("{}/{}_y.json".format(dataset_path, self.state), encoding="utf-8") as f:
+            self.dataset_split_y = json.loads(f.read())            
+        length = len(self.dataset_split.keys())
+        self.final_index = []
+        for _, user_id in tqdm(enumerate(list(self.dataset_split.keys()))):
+            u_id = int(user_id)
+            seen_movie_len = len(self.dataset_split[str(u_id)])
+
+            if seen_movie_len < 13 or seen_movie_len > 100:
+                continue
+            else:
+                self.final_index.append(user_id)
+         
+
+    def __getitem__(self, item):
+        user_id = self.final_index[item]
+        u_id = int(user_id)
+        seen_movie_len = len(self.dataset_split[str(u_id)])
+        indices = list(range(seen_movie_len))
+        random.shuffle(indices)
+        tmp_x = np.array(self.dataset_split[str(u_id)])
+        tmp_y = np.array(self.dataset_split_y[str(u_id)])
+        
+        support_x_app = None
+        for m_id in tmp_x[indices[:-10]]:
+            m_id = int(m_id)
+            tmp_x_converted = torch.cat((self.movie_dict[m_id], self.user_dict[u_id]), 1)
+            try:
+                support_x_app = torch.cat((support_x_app, tmp_x_converted), 0)
+            except:
+                support_x_app = tmp_x_converted
+        query_x_app = None
+        for m_id in tmp_x[indices[-10:]]:
+            m_id = int(m_id)
+            u_id = int(user_id)
+            tmp_x_converted = torch.cat((self.movie_dict[m_id], self.user_dict[u_id]), 1)
+            try:
+                query_x_app = torch.cat((query_x_app, tmp_x_converted), 0)
+            except:
+                query_x_app = tmp_x_converted
+        support_y_app = torch.FloatTensor(tmp_y[indices[:-10]])
+        query_y_app = torch.FloatTensor(tmp_y[indices[-10:]])
+        return support_x_app, support_y_app.view(-1,1), query_x_app, query_y_app.view(-1,1)
+        
+    def __len__(self):
+        return len(self.final_index)
